@@ -2,19 +2,21 @@ package main
 
 import (
 	"flag"
-	"time"
+	"fmt"
+	"net"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bsm/redeo"
-	"fmt"
-	"strconv"
+	"github.com/bsm/redeo/resp"
 )
 
 var (
 	listenAddr string
 
 	//store
-	mapLock = new(sync.Mutex)
+	mapLock  = new(sync.Mutex)
 	mapStore = make(map[string]string)
 )
 
@@ -24,18 +26,24 @@ func init() {
 
 func main() {
 	config := redeo.Config{
-		Addr:listenAddr,
-		TCPKeepAlive:300*time.Second,
+		TCPKeepAlive: 300 * time.Second,
 	}
 	server := redeo.NewServer(&config)
 
 	registerCommand(server)
 
-	err := server.ListenAndServe()
+	l, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		panic(err)
+	}
+	defer l.Close()
+
+	err = server.Serve(l)
 	if err != nil {
 		panic(err)
 	}
 }
+
 /*
 PING_INLINE ping
 PING_BULK ping
@@ -54,37 +62,33 @@ LRANGE_300 (first 300 elements) lrange
 LRANGE_500 (first 450 elements) lrange
 LRANGE_600 (first 600 elements) lrange
 MSET (10 keys) mset
- */
+*/
 func registerCommand(server *redeo.Server) {
-	server.HandleFunc("ping", func(out *redeo.Responder, _ *redeo.Request) error {
-		out.WriteInlineString("PONG")
-		return nil
+	server.HandleFunc("ping", func(out resp.ResponseWriter, _ *resp.Command) {
+		out.AppendInlineString("PONG")
 	})
-	server.HandleFunc("set", func(out *redeo.Responder, req *redeo.Request) error {
+	server.HandleFunc("set", func(out resp.ResponseWriter, req *resp.Command) {
 		key := req.Args[0]
 		value := req.Args[1]
 		mapLock.Lock()
-		mapStore[key] = value
+		mapStore[key.String()] = value.String()
 		mapLock.Unlock()
-		out.WriteInlineString("OK")
-		return nil
+		out.AppendInlineString("OK")
 	})
-	server.HandleFunc("get", func(out *redeo.Responder, req *redeo.Request) error {
+	server.HandleFunc("get", func(out resp.ResponseWriter, req *resp.Command) {
 		mapLock.Lock()
-		v, ok:=mapStore[req.Args[0]]
+		v, ok := mapStore[req.Args[0].String()]
 		mapLock.Unlock()
 		if !ok {
-			out.WriteNil()
+			out.AppendNil()
 		} else {
-			out.WriteString(v)
+			out.AppendBulkString(v)
 		}
-		return nil
 	})
-	server.HandleFunc("info", func(out *redeo.Responder, req *redeo.Request) error {
+	server.HandleFunc("info", func(out resp.ResponseWriter, req *resp.Command) {
 		mapLock.Lock()
-		msg := fmt.Sprintln("key_count: "+strconv.Itoa(len(mapStore)))
+		msg := fmt.Sprintln("key_count: " + strconv.Itoa(len(mapStore)))
 		mapLock.Unlock()
-		out.WriteString(msg)
-		return nil
+		out.AppendBulkString(msg)
 	})
 }
